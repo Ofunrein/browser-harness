@@ -419,7 +419,7 @@ def _chrome_running():
             names = ("chrome.exe", "msedge.exe")
         else:
             out = subprocess.check_output(["ps", "-A", "-o", "comm="], text=True, timeout=5)
-            names = ("Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge")
+            names = ("Google Chrome Beta", "Google Chrome", "chrome", "chromium", "Microsoft Edge", "msedge")
         return any(n.lower() in out.lower() for n in names)
     except Exception:
         return False
@@ -433,8 +433,8 @@ def _open_chrome_inspect():
         try:
             subprocess.run([
                 "osascript",
-                "-e", 'tell application "Google Chrome" to activate',
-                "-e", f'tell application "Google Chrome" to open location "{url}"',
+                "-e", 'tell application "Google Chrome Beta" to activate',
+                "-e", f'tell application "Google Chrome Beta" to open location "{url}"',
             ], timeout=5, check=False)
             return
         except Exception:

@@ -26,6 +26,9 @@ LOG = f"/tmp/bu-{NAME}.log"
 PID = f"/tmp/bu-{NAME}.pid"
 BUF = 500
 PROFILES = [
+    # Beta first: dedicated automation channel, stays alive/authorized across the
+    # daily-driver Chrome's memory-pressure force-quits, so debugging consent never resets.
+    Path.home() / "Library/Application Support/Google/Chrome Beta",
     Path.home() / "Library/Application Support/Google/Chrome",
     Path.home() / "Library/Application Support/Microsoft Edge",
     Path.home() / "Library/Application Support/Microsoft Edge Beta",
