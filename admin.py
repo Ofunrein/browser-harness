@@ -52,10 +52,11 @@ def daemon_alive(name=None):
 
 
 def ensure_daemon(wait=60.0, name=None, env=None):
-    """Idempotent. Self-heals stale daemon, cold Chrome, and missing Allow on chrome://inspect."""
+    """Attach to an existing CDP endpoint without opening or modifying a browser."""
     if daemon_alive(name):
         # Stale daemons accept connects AND reply to meta:* (pure Python) even when the
         # CDP WS to Chrome is dead — probe with a real CDP call and require "result".
+        s = None
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(3)
             s.connect(_paths(name)[0])
@@ -66,30 +67,33 @@ def ensure_daemon(wait=60.0, name=None, env=None):
                 if not chunk: break
                 data += chunk
             if b'"result"' in data: return
-        except Exception: pass
-        restart_daemon(name)
-
-    import subprocess, sys
-    local = not (env or {}).get("BU_CDP_WS") and not os.environ.get("BU_CDP_WS")
-    for attempt in (0, 1):
-        e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
-        p = subprocess.Popen(
-            ["uv", "run", "daemon.py"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        except Exception:
+            pass
+        finally:
+            if s:
+                s.close()
+        raise RuntimeError(
+            "attach-only mode: shared daemon is alive but its Chrome connection is unhealthy. "
+            "It was not recycled because reconnecting can trigger browser permission UI."
         )
-        deadline = time.time() + wait
-        while time.time() < deadline:
-            if daemon_alive(name): return
-            if p.poll() is not None: break
-            time.sleep(0.2)
-        msg = _log_tail(name) or ""
-        if local and attempt == 0 and ("DevToolsActivePort not found" in msg or "not live yet" in msg or ("WS handshake failed" in msg and "403" in msg)):
-            _open_chrome_inspect()
-            print("browser-harness: click Allow on chrome://inspect (and tick the checkbox if shown)", file=sys.stderr)
-            restart_daemon(name)
-            continue
-        raise RuntimeError(msg or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log")
+
+    import subprocess
+    e = {**os.environ, **({"BU_NAME": name} if name else {}), **(env or {})}
+    p = subprocess.Popen(
+        ["uv", "run", "daemon.py"],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        env=e, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if daemon_alive(name): return
+        if p.poll() is not None: break
+        time.sleep(0.2)
+    msg = _log_tail(name) or f"daemon {name or NAME} didn't come up -- check /tmp/bu-{name or NAME}.log"
+    raise RuntimeError(
+        f"{msg}\nattach-only mode: browser-harness did not open, focus, or modify any browser. "
+        "Keep the already-authorized Chrome Beta instance and shared daemon running, or set BU_CDP_WS."
+    )
 
 
 def stop_remote_daemon(name="remote"):
@@ -425,30 +429,8 @@ def _chrome_running():
         return False
 
 
-def _open_chrome_inspect():
-    """Open chrome://inspect/#remote-debugging so the user can tick the checkbox."""
-    import platform, subprocess, webbrowser
-    url = "chrome://inspect/#remote-debugging"
-    if platform.system() == "Darwin":
-        try:
-            subprocess.run([
-                "osascript",
-                "-e", 'tell application "Google Chrome Beta" to activate',
-                "-e", f'tell application "Google Chrome Beta" to open location "{url}"',
-            ], timeout=5, check=False)
-            return
-        except Exception:
-            pass
-    try:
-        webbrowser.open(url, new=2)
-    except Exception:
-        pass
-
-
 def run_setup():
-    """Interactive bootstrap: attach to the running browser, guiding the user through chrome://inspect if needed.
-
-    Exit code 0 on success, 1 on failure."""
+    """Attach-only bootstrap. Never opens Chrome or permission UI."""
     import sys
     print("browser-harness setup: attaching to your browser...")
 
@@ -460,37 +442,12 @@ def run_setup():
         print("no Chrome/Edge process detected. please start your browser and rerun `browser-harness --setup`.")
         return 1
 
-    # First attach attempt.
     try:
         ensure_daemon(wait=20.0)
         print("daemon is up.")
         return 0
     except RuntimeError as e:
-        first_err = str(e)
-
-    needs_inspect = "DevToolsActivePort not found" in first_err or "enable chrome://inspect" in first_err
-    if needs_inspect:
-        print("chrome remote-debugging is not enabled on the current profile.")
-        print("opening chrome://inspect/#remote-debugging -- in the tab that opens:")
-        print("  1. if chrome shows the profile picker, pick your normal profile;")
-        print("  2. tick 'Discover network targets' and click Allow if prompted.")
-        _open_chrome_inspect()
-    else:
-        print(f"attach failed: {first_err}")
-        print("retrying for up to 60s (chrome may still be starting up)...")
-
-    deadline = time.time() + 60
-    last = first_err
-    while time.time() < deadline:
-        try:
-            ensure_daemon(wait=5.0)
-            print("daemon is up.")
-            return 0
-        except RuntimeError as e:
-            last = str(e)
-            time.sleep(2)
-
-    print(f"setup failed: {last}", file=sys.stderr)
+        print(f"setup failed: {e}", file=sys.stderr)
     print("run `browser-harness --doctor` for diagnostics.", file=sys.stderr)
     return 1
 
@@ -530,21 +487,8 @@ def run_doctor():
     return 0 if (chrome and daemon) else 1
 
 
-def _prompt_yes(question, default_yes=True, yes=False):
-    if yes:
-        return True
-    suffix = "[Y/n]" if default_yes else "[y/N]"
-    try:
-        ans = input(f"{question} {suffix} ").strip().lower()
-    except EOFError:
-        return default_yes
-    if not ans:
-        return default_yes
-    return ans.startswith("y")
-
-
 def run_update(yes=False):
-    """Pull the latest version and (after prompt) restart the daemon so it picks up changed code.
+    """Pull the latest version without recycling the authorized browser connection.
 
     Exit 0 on success, non-zero on failure."""
     import subprocess, sys
@@ -592,10 +536,6 @@ def run_update(yes=False):
     _cache_write(cache)
 
     if daemon_alive():
-        if _prompt_yes("restart the running daemon so it picks up the new code?", default_yes=True, yes=yes):
-            restart_daemon()
-            print("daemon stopped; it will auto-restart on next `browser-harness` call.")
-        else:
-            print("daemon left running on old code. run `browser-harness` and it'll use the new code after the daemon recycles.")
+        print("daemon left running to preserve the authorized Chrome connection; new daemon code loads after its next natural restart.")
     print("update complete.")
     return 0

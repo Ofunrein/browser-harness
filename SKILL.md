@@ -14,8 +14,9 @@ Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `in
 ## Self-maintenance
 
 - `browser-harness --doctor` — diagnose install, daemon, browser, and whether an update is available.
-- `browser-harness --setup` — re-run the interactive browser-attach flow (equivalent to the bootstrap in `install.md`).
-- `browser-harness --update -y` — pull the latest version and restart the daemon without prompting. **If you see a banner like `[browser-harness] update available: X -> Y` at the top of a run, run this yourself — don't ask the user first.** The banner is rate-limited to once per day.
+- `browser-harness --setup` attaches only to an existing authorized endpoint. It never opens or focuses Chrome or permission UI.
+- `browser-harness --update -y` pulls code without recycling the live daemon. Never stop a healthy daemon during routine work.
+- Never open `chrome://inspect`, request remote-debugging permission, or tell the user to click Allow. Authorization already exists. Failure means preserve browser state and return the attach diagnostic.
 
 ```bash
 browser-harness <<'PY'
@@ -166,23 +167,15 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 
 ## Gotchas (field-tested)
 
-- **Chrome 144+ `chrome://inspect/#remote-debugging` does NOT serve `/json/version`.** Read `DevToolsActivePort` instead.
-- **Try attaching before asking for setup.** If `uv run browser-harness` already works, skip the remote-debugging instructions entirely. Decide what to escalate from the harness's error message, not from whether Chrome is visibly running.
-- **The remote-debugging checkbox is per-profile sticky in Chrome.** Once ticked on a profile, every future Chrome launch auto-enables CDP — only navigate to `chrome://inspect/#remote-debugging` when `DevToolsActivePort` is genuinely missing on a fresh profile.
-- **The first connect may block on Chrome's Allow dialog.** If setup hangs, explicitly tell the user to click `Allow` in Chrome if it appears, then keep polling for up to 30 seconds instead of treating follow-on errors as a new failure.
-- **`DevToolsActivePort` can exist before the port is actually listening.** Treat connection refused as "still enabling" and keep polling for up to 30 seconds.
-- **Chrome may open the profile picker before any real tab exists.** If Chrome opens both a profile picker and the remote-debugging page, tell the user to choose their normal profile first, then tick the checkbox and click `Allow` if shown.
-- **On macOS, if Chrome is already running, prefer AppleScript `open location` over `open -a ... URL`.** It reuses the current profile and avoids creating an extra startup path through the profile picker.
+- **Attach-only is permanent.** Never open or focus Chrome, change browser settings, request permission, or recycle a healthy daemon.
+- **Chrome Beta is first.** Local discovery reads its `DevToolsActivePort` before other profiles and skips stale ports.
+- **All local agents share one daemon.** Reuse preserves the authorized connection and prevents repeated browser security prompts.
+- **`DevToolsActivePort` can exist before its port listens.** The harness polls briefly, then fails with a diagnostic and no browser action.
+- **No endpoint means no fallback UI.** Use an explicit `BU_CDP_WS` for isolated or remote work.
 - **Omnibox popups are fake `page` targets.** Filter `chrome://omnibox-popup...` and other internals when you need a real tab.
 - **CDP target order != Chrome's visible tab-strip order.** Use UI automation when the user means "the first/second tab I can see"; `Target.activateTarget` only shows a known target.
 - **Default daemon sessions can go stale.** `ensure_real_tab()` re-attaches to a real page.
-- **`no close frame received or sent` usually means a stale daemon / websocket.** Restart the daemon once with:
-  `uv run python - <<'PY'`
-  `from admin import restart_daemon`
-  `restart_daemon()`
-  `PY`
-  before assuming setup is wrong.
-- **If `restart_daemon()` also hangs**, kill Chrome entirely (`pkill -9 -f "Google Chrome"`), clean sockets (`rm -f /tmp/bu-default.sock /tmp/bu-default.pid`), reopen Chrome (`open -a "Google Chrome"`), wait 5s, then reconnect. This resets all CDP state.
+- **Stale connection means diagnose, not blind restart.** Recycling the daemon creates a new Chrome attach. Preserve it when healthy. Use `BU_CDP_WS` when isolation is required.
 - **Browser Use API is camelCase on the wire.** `cdpUrl`, `proxyCountryCode`, etc.
 - **Remote `cdpUrl` is HTTPS, not ws.** Resolve the websocket URL via `/json/version`.
 - **Stop cloud browsers with `PATCH /browsers/{id}` + `{\"action\":\"stop\"}`.**

@@ -31,8 +31,8 @@ Helpers are pre-imported. The daemon auto-starts and connects to the running bro
 Commands:
   browser-harness --version        print the installed version
   browser-harness --doctor         diagnose install, daemon, and browser state
-  browser-harness --setup          interactively attach to your running browser
-  browser-harness --update [-y]    pull the latest version (agents: pass -y)
+  browser-harness --setup          attach to an existing authorized browser endpoint
+  browser-harness --update [-y]    pull updates without recycling the live daemon
 """
 
 

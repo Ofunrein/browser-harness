@@ -18,19 +18,16 @@ The agent writes what's missing, mid-task. No framework, no recipes, no rails. O
 
 **You will never use the browser again.**
 
-## Setup prompt
+## Attach-only setup
 
-Paste into Claude Code or Codex:
+This fork attaches to an existing authorized Chrome Beta endpoint. It never opens or focuses Chrome, opens browser settings, or requests permission. Every local agent shares the same long-running daemon and `DevToolsActivePort` connection.
 
-```text
-Set up https://github.com/browser-use/browser-harness for me.
-
-Read `install.md` first to install and connect this repo to my real browser. Then read `SKILL.md` for normal usage. Always read `helpers.py` because that is where the functions are. When you open a setup or verification tab, activate it so I can see the active browser tab. After it is installed, open this repository in my browser and, if I am logged in to GitHub, ask me whether you should star it for me as a quick demo that the interaction works — only click the star if I say yes. If I am not logged in, just go to browser-use.com.
+```bash
+browser-harness --setup
+browser-harness --doctor
 ```
 
-When this page appears, tick the checkbox so the agent can connect to your browser:
-
-<img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
+Unavailable local endpoint means clean failure. Use `BU_CDP_WS` for a dedicated or remote browser. Never recycle a healthy daemon during routine agent work.
 
 See [domain-skills/](domain-skills/) for example tasks.
 

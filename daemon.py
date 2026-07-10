@@ -64,28 +64,34 @@ def log(msg):
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
-    for base in PROFILES:
-        try:
-            port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        deadline = time.time() + 30
-        while True:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            probe.settimeout(1)
+    timeout = float(os.environ.get("BU_ATTACH_TIMEOUT", "5"))
+    deadline = time.time() + max(0, timeout)
+    found = []
+    while True:
+        for base in PROFILES:
             try:
-                probe.connect(("127.0.0.1", int(port.strip())))
-                break
-            except OSError:
-                if time.time() >= deadline:
-                    raise RuntimeError(
-                        f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port.strip()} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
-                    )
-                time.sleep(1)
-            finally:
-                probe.close()
-        return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+                port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
+                port = port.strip()
+                path = path.strip()
+                found.append((base, port))
+            except (FileNotFoundError, NotADirectoryError, ValueError, OSError):
+                continue
+            try:
+                with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
+                    return f"ws://127.0.0.1:{port}{path}"
+            except (OSError, ValueError):
+                continue
+        if time.time() >= deadline:
+            break
+        time.sleep(0.2)
+    if found:
+        detail = "DevToolsActivePort exists, but no listed endpoint is live"
+    else:
+        detail = "no DevToolsActivePort exists in the configured browser profiles"
+    raise RuntimeError(
+        f"attach-only: {detail}. Browser-harness did not open or modify Chrome. "
+        "Keep the already-authorized Chrome Beta instance running, or set BU_CDP_WS."
+    )
 
 
 def stop_remote():
@@ -146,7 +152,10 @@ class Daemon:
         try:
             await self.cdp.start()
         except Exception as e:
-            raise RuntimeError(f"CDP WS handshake failed: {e} -- click Allow in Chrome if prompted, then retry")
+            raise RuntimeError(
+                f"CDP WS handshake failed in attach-only mode: {e}. "
+                "Browser-harness did not open or modify Chrome; preserve the shared daemon or set BU_CDP_WS."
+            )
         await self.attach_first_page()
         orig = self.cdp._event_registry.handle_event
         mark_js = "if(!document.title.startsWith('\U0001F7E2'))document.title='\U0001F7E2 '+document.title"
