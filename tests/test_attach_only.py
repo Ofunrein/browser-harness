@@ -1,8 +1,17 @@
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+if "cdp_use.client" not in sys.modules:
+    client = types.ModuleType("cdp_use.client")
+    client.CDPClient = object
+    sys.modules.setdefault("cdp_use", types.ModuleType("cdp_use"))
+    sys.modules["cdp_use.client"] = client
 
 import admin
 import daemon
