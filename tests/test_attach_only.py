@@ -15,6 +15,7 @@ if "cdp_use.client" not in sys.modules:
 
 import admin
 import daemon
+import helpers
 
 
 class _Connection:
@@ -97,6 +98,15 @@ class AttachOnlyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not recycled"):
                 admin.ensure_daemon(wait=0)
             restart.assert_not_called()
+
+    def test_switch_tab_attaches_before_any_runtime_call(self):
+        with patch.object(helpers, "cdp") as cdp, \
+             patch.object(helpers, "_send", return_value={"session_id": "session-new"}), \
+             patch.object(helpers, "_mark_tab"):
+            cdp.side_effect = [{}, {"sessionId": "session-new"}]
+            helpers.switch_tab("target-new")
+        self.assertEqual(cdp.call_args_list[0].args, ("Target.activateTarget",))
+        self.assertEqual(cdp.call_args_list[1].args, ("Target.attachToTarget",))
 
 
 if __name__ == "__main__":

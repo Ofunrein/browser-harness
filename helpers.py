@@ -25,6 +25,7 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 
 def _send(req):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(float(os.environ.get("BU_IPC_TIMEOUT", "15")))
     s.connect(SOCK)
     s.sendall((json.dumps(req) + "\n").encode())
     data = b""
@@ -124,9 +125,7 @@ def _mark_tab():
     except Exception: pass
 
 def switch_tab(target_id):
-    # Unmark old tab
-    try: cdp("Runtime.evaluate", expression="if(document.title.startsWith('\U0001F7E2 '))document.title=document.title.slice(2)")
-    except Exception: pass
+    # Never touch the old session first. It may be stale and block the switch.
     cdp("Target.activateTarget", targetId=target_id)
     sid = cdp("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
     _send({"meta": "set_session", "session_id": sid})
