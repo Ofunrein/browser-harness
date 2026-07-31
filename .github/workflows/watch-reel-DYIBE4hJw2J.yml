@@ -1,0 +1,299 @@
+name: Watch Instagram Reel DYIBE4hJw2J
+
+on:
+  push:
+    paths:
+      - ".github/workflows/watch-reel-DYIBE4hJw2J.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      REEL_URL: "https://www.instagram.com/reel/DYIBE4hJw2J/"
+      OUT_DIR: "watch-output/DYIBE4hJw2J"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install media tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg jq
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "yt-dlp[default,curl-cffi]" faster-whisper pillow requests
+
+      - name: Retrieve Reel
+        shell: bash
+        run: |
+          set +e
+          mkdir -p work "$OUT_DIR"
+          : > work/retrieval.log
+
+          echo "== Direct yt-dlp ==" | tee -a work/retrieval.log
+          yt-dlp \
+            --no-playlist \
+            --impersonate chrome \
+            --write-auto-subs --write-subs --sub-langs "en.*,en" --sub-format vtt \
+            --merge-output-format mp4 \
+            -o "work/reel.%(ext)s" \
+            "$REEL_URL" 2>&1 | tee -a work/retrieval.log
+
+          find work -maxdepth 1 -type f -name 'reel*.mp4' -print -quit > work/video_path.txt
+
+          if [ ! -s work/video_path.txt ]; then
+            echo "== Fallback retrievals ==" | tee -a work/retrieval.log
+            python3 - <<'PY' 2>&1 | tee -a work/retrieval.log
+          import html, json, os, re, subprocess, sys
+          from pathlib import Path
+          import requests
+
+          reel = os.environ['REEL_URL']
+          out = Path('work/reel-fallback.mp4')
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36',
+              'Accept': '*/*',
+          }
+
+          def urls_in(obj):
+              found = []
+              if isinstance(obj, str):
+                  s = html.unescape(obj).replace('\\u0026', '&').replace('\\/', '/')
+                  if s.startswith('http'):
+                      found.append(s)
+                  found += re.findall(r'https?://[^"\'<>\\s]+', s)
+              elif isinstance(obj, dict):
+                  for v in obj.values(): found += urls_in(v)
+              elif isinstance(obj, list):
+                  for v in obj: found += urls_in(v)
+              return found
+
+          def try_download(url, label):
+              try:
+                  print(f'Trying media URL from {label}: {url[:180]}')
+                  with requests.get(url, headers=headers, stream=True, timeout=120, allow_redirects=True) as r:
+                      print('status', r.status_code, 'type', r.headers.get('content-type'), 'length', r.headers.get('content-length'))
+                      r.raise_for_status()
+                      ctype = (r.headers.get('content-type') or '').lower()
+                      with out.open('wb') as f:
+                          for chunk in r.iter_content(1024 * 1024):
+                              if chunk: f.write(chunk)
+                  if out.stat().st_size > 100_000:
+                      probe = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nk=1:nw=1',str(out)], capture_output=True, text=True)
+                      if probe.returncode == 0 and probe.stdout.strip():
+                          print('Downloaded valid video, duration', probe.stdout.strip())
+                          return True
+                  out.unlink(missing_ok=True)
+              except Exception as e:
+                  print(label, 'download failed:', repr(e))
+                  out.unlink(missing_ok=True)
+              return False
+
+          candidates = []
+
+          # Instagram public embed often exposes a signed CDN URL.
+          for embed in [
+              reel.rstrip('/') + '/embed/captioned/',
+              reel.rstrip('/') + '/embed/',
+              reel + '?__a=1&__d=dis',
+          ]:
+              try:
+                  r = requests.get(embed, headers=headers, timeout=60)
+                  print('Instagram endpoint', embed, r.status_code, r.url, r.headers.get('content-type'))
+                  text = html.unescape(r.text).replace('\\u0026','&').replace('\\/','/')
+                  for pat in [r'"video_url"\s*:\s*"([^"]+)', r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)', r'<video[^>]+src=["\']([^"\']+)']:
+                      candidates += re.findall(pat, text, flags=re.I)
+              except Exception as e:
+                  print('Instagram endpoint failed:', repr(e))
+
+          # ClipLatch parser.
+          for body in ({'url': reel}, {'instagramUrl': reel}, {'input': reel}):
+              try:
+                  r = requests.post('https://cliplatch.com/api/parse', json=body, headers=headers, timeout=120)
+                  print('ClipLatch', body.keys(), r.status_code, r.headers.get('content-type'), r.text[:500])
+                  try: data = r.json()
+                  except Exception: data = r.text
+                  candidates += urls_in(data)
+                  if r.ok: break
+              except Exception as e:
+                  print('ClipLatch failed:', repr(e))
+
+          # Cobalt public API variants.
+          cobalt_bodies = [
+              {'url': reel, 'videoQuality': '1080', 'downloadMode': 'auto'},
+              {'url': reel, 'vQuality': '1080', 'isAudioOnly': False},
+          ]
+          for endpoint in ['https://api.cobalt.tools/', 'https://co.wuk.sh/api/json']:
+              for body in cobalt_bodies:
+                  try:
+                      r = requests.post(endpoint, json=body, headers={**headers, 'Accept':'application/json','Content-Type':'application/json'}, timeout=120)
+                      print('Cobalt', endpoint, r.status_code, r.text[:500])
+                      try: data = r.json()
+                      except Exception: data = r.text
+                      candidates += urls_in(data)
+                  except Exception as e:
+                      print('Cobalt failed:', repr(e))
+
+          # Common redirect/embed mirrors.
+          for mirror in [
+              reel.replace('www.instagram.com','www.ddinstagram.com'),
+              reel.replace('www.instagram.com','www.vxinstagram.com'),
+              reel.replace('www.instagram.com','www.kkinstagram.com'),
+          ]:
+              try:
+                  r = requests.get(mirror, headers=headers, timeout=90, allow_redirects=True)
+                  print('Mirror', mirror, r.status_code, r.url, r.text[:200])
+                  text = html.unescape(r.text).replace('\\u0026','&').replace('\\/','/')
+                  for pat in [r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)', r'"video_url"\s*:\s*"([^"]+)']:
+                      candidates += re.findall(pat, text, flags=re.I)
+              except Exception as e:
+                  print('Mirror failed:', repr(e))
+
+          # Normalize and prioritize likely direct media URLs.
+          normalized = []
+          for u in candidates:
+              u = html.unescape(u).replace('\\u0026','&').replace('\\/','/').rstrip('),]')
+              if u not in normalized: normalized.append(u)
+          normalized.sort(key=lambda u: (not any(x in u.lower() for x in ['.mp4','cdninstagram','fbcdn','video']), len(u)))
+          print('Candidate URL count:', len(normalized))
+          for u in normalized[:40]:
+              if try_download(u, 'candidate'):
+                  sys.exit(0)
+          sys.exit(1)
+          PY
+          fi
+
+          if [ -f work/reel-fallback.mp4 ]; then
+            echo "work/reel-fallback.mp4" > work/video_path.txt
+          fi
+
+          if [ ! -s work/video_path.txt ]; then
+            cp work/retrieval.log "$OUT_DIR/retrieval-failed.log"
+            echo '{"success":false,"stage":"retrieval"}' > "$OUT_DIR/status.json"
+            exit 1
+          fi
+
+          VIDEO="$(cat work/video_path.txt)"
+          echo "$VIDEO" > work/video_path.txt
+          ffprobe -v error -show_format -show_streams -of json "$VIDEO" > "$OUT_DIR/ffprobe.json"
+          cp work/retrieval.log "$OUT_DIR/retrieval.log"
+
+      - name: Extract transcript and frames
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          VIDEO="$(cat work/video_path.txt)"
+          mkdir -p work/frames "$OUT_DIR/frames"
+
+          python3 - <<'PY'
+          import json, math, os, subprocess
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          video = Path(Path('work/video_path.txt').read_text().strip())
+          out_dir = Path(os.environ['OUT_DIR'])
+          frames_dir = Path('work/frames')
+          probe = json.loads((out_dir / 'ffprobe.json').read_text())
+          duration = float(probe['format']['duration'])
+          count = 16 if duration >= 8 else max(8, math.ceil(duration * 2))
+          times = [duration * (i + 0.5) / count for i in range(count)]
+
+          imgs = []
+          for i, t in enumerate(times, 1):
+              p = frames_dir / f'frame-{i:02d}-{t:06.2f}s.jpg'
+              subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-ss',f'{t:.3f}','-i',str(video),'-frames:v','1','-vf','scale=512:-2', '-q:v','2',str(p)], check=True)
+              img = Image.open(p).convert('RGB')
+              imgs.append((t, img.copy()))
+              if i in {1, 4, 7, 10, 13, 16} or count < 16:
+                  img.save(out_dir / 'frames' / p.name, quality=88, optimize=True)
+
+          cell_w = 512
+          label_h = 34
+          cell_h = max(im.height for _, im in imgs) + label_h
+          cols = 4
+          rows = math.ceil(len(imgs) / cols)
+          sheet = Image.new('RGB', (cell_w * cols, cell_h * rows), 'white')
+          draw = ImageDraw.Draw(sheet)
+          for idx, (t, im) in enumerate(imgs):
+              x = (idx % cols) * cell_w
+              y = (idx // cols) * cell_h
+              sheet.paste(im, (x, y + label_h))
+              m, s = divmod(t, 60)
+              draw.text((x + 8, y + 8), f'{int(m):02d}:{s:05.2f}', fill='black')
+          sheet.save(out_dir / 'contact-sheet.jpg', quality=84, optimize=True)
+          (out_dir / 'frame-times.json').write_text(json.dumps(times, indent=2))
+          PY
+
+          # Prefer native subtitles if yt-dlp produced any; otherwise transcribe audio.
+          SUB="$(find work -maxdepth 1 -type f \( -name '*.vtt' -o -name '*.srt' \) -print -quit || true)"
+          if [ -n "$SUB" ]; then
+            cp "$SUB" "$OUT_DIR/native-subtitles.vtt"
+          fi
+
+          ffmpeg -hide_banner -loglevel error -i "$VIDEO" -vn -ac 1 -ar 16000 work/audio.wav
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          from faster_whisper import WhisperModel
+
+          model = WhisperModel('base.en', device='cpu', compute_type='int8')
+          segments, info = model.transcribe('work/audio.wav', beam_size=5, vad_filter=True, word_timestamps=False)
+          rows = []
+          text = []
+          for seg in segments:
+              line = seg.text.strip()
+              if not line: continue
+              rows.append({'start': round(seg.start,3), 'end': round(seg.end,3), 'text': line})
+              text.append(f'[{seg.start:06.2f} - {seg.end:06.2f}] {line}')
+          out = Path(os.environ['OUT_DIR'])
+          (out / 'transcript.txt').write_text('\n'.join(text) + '\n', encoding='utf-8')
+          (out / 'transcript.json').write_text(json.dumps({'language':info.language,'language_probability':info.language_probability,'segments':rows}, indent=2), encoding='utf-8')
+          PY
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = Path(os.environ['OUT_DIR'])
+          probe = json.loads((out/'ffprobe.json').read_text())
+          dur = float(probe['format']['duration'])
+          transcript = (out/'transcript.txt').read_text(errors='replace')
+          report = [
+              '# Reel watch output',
+              '',
+              f'- Source: {os.environ["REEL_URL"]}',
+              f'- Duration: {dur:.2f} seconds',
+              f'- Transcript characters: {len(transcript)}',
+              f'- Contact sheet: contact-sheet.jpg',
+              '',
+              '## Transcript',
+              '',
+              transcript,
+          ]
+          (out/'report.md').write_text('\n'.join(report), encoding='utf-8')
+          (out/'status.json').write_text(json.dumps({'success':True,'duration':dur}, indent=2))
+          PY
+
+      - name: Upload watch output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reel-watch-DYIBE4hJw2J
+          path: watch-output/DYIBE4hJw2J
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Commit compact output
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$OUT_DIR"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Add temporary Reel watch output DYIBE4hJw2J"
+          git push
