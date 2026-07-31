@@ -1,0 +1,22 @@
+name: Export Reel Watch DYIBE4hJw2J
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "watch-trigger/DYIBE4hJw2J.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reel-watch-DYIBE4hJw2J-export
+          path: watch-output/DYIBE4hJw2J
+          if-no-files-found: error
+          retention-days: 1
